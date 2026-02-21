@@ -533,20 +533,60 @@ app.post("/campaign/join/:id", async (req, res) => {
 });
 
 // Donate to campaign (update amount after Razorpay success)
+// Donate to campaign — 94% to campaign, 6% to pool
 app.put("/campaign/donate/:id", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ success: false, message: "Not authenticated" });
     try {
         const { amount } = req.body;
+
+        const poolCut = Math.round(amount * 0.06);
+        const campaignAmount = amount - poolCut;
+
         const campaign = await campaignmodel.findByIdAndUpdate(
             req.params.id,
-            { $inc: { amountRaised: amount } },
+            { $inc: { amountRaised: campaignAmount } },
             { new: true }
         );
-        res.json({ success: true, amountRaised: campaign.amountRaised });
+
+        if (!campaign) return res.status(404).json({ success: false, message: "Campaign not found" });
+
+        // Record 94% as campaign donation
+        await donationmodel.create({
+            userId: req.user._id,
+            campaignId: req.params.id,
+            type: "donation",
+            amount: campaignAmount,
+            description: `₹${campaignAmount} donated to "${campaign.title}" by @${req.user.username}`
+        });
+
+        // Record 6% as pool donation (no campaignId = goes to pool)
+        await donationmodel.create({
+            userId: req.user._id,
+            type: "donation",
+            amount: poolCut,
+            description: `₹${poolCut} platform fee (6%) from @${req.user.username}'s donation to "${campaign.title}"`
+        });
+
+        // Notify campaign creator
+        await usermodel.findByIdAndUpdate(campaign.userId, {
+            $push: {
+                notifications: {
+                    message: `💰 @${req.user.username} donated ₹${campaignAmount} to your campaign "${campaign.title}"!`
+                }
+            }
+        });
+
+        res.json({
+            success: true,
+            amountRaised: campaign.amountRaised,
+            campaignAmount,
+            poolCut,
+            message: `₹${campaignAmount} to campaign, ₹${poolCut} to platform pool`
+        });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
-});  
+});
 
 // Get join requests for a campaign
 app.get("/campaign/requests/:id", async (req, res) => {
@@ -815,15 +855,6 @@ Do not reveal any sensitive information like passwords or emails.`;
     }
 });
 
-// ==========================================
-// DONATION POOL ROUTES — add to app.js
-// ==========================================
-
-// You need a new Mongoose model — add this near your other models:
-// const { donationmodel } = require("../db/model");
-
-// ── GET /donation/pool ─────────────────────
-// Returns total unallocated pool amount
 app.get("/donation/pool", async (req, res) => {
   try {
     const donations = await donationmodel.aggregate([

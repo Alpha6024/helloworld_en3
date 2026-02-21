@@ -193,42 +193,58 @@ export default function Campaign() {
     };
 
     const payNow = async (campaignId) => {
-        const amount = parseInt(donationAmount);
-        if (!amount || amount < 1) return alert('Please enter a valid amount');
-        try {
-            const res = await fetch("http://localhost:3000/payment/create-order", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ amount }),
-            });
-            const order = await res.json();
-            if (!order.id) return alert('Failed to create order');
-            const options = {
-                key: "rzp_test_SGtmofw4CWXzzG",
-                amount: order.amount,
-                currency: "INR",
-                name: "Prithvi Campaign Donation",
-                description: "Support this campaign ❤️",
-                order_id: order.id,
-                handler: async function () {
-                    await fetch(`http://localhost:3000/campaign/donate/${campaignId}`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        credentials: 'include',
-                        body: JSON.stringify({ amount })
-                    });
-                    alert("Payment Successful 🎉 Thank you for supporting!");
-                    setDonationAmount('');
-                    fetchCampaigns();
-                },
-                theme: { color: "#22c55e" }
-            };
-            const rzp = new window.Razorpay(options);
-            rzp.open();
-        } catch (err) {
-            alert("Payment Failed 😢");
-        }
-    };
+    const amount = parseInt(donationAmount);
+    if (!amount || amount < 1) return alert('Please enter a valid amount');
+
+    const poolCut = Math.round(amount * 0.06);
+    const campaignAmount = amount - poolCut;
+
+    try {
+        const res = await fetch("http://localhost:3000/payment/create-order", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ amount }),
+        });
+        const order = await res.json();
+        if (!order.id) return alert('Failed to create order');
+
+        const options = {
+            key: "rzp_test_SGtmofw4CWXzzG",
+            amount: order.amount,
+            currency: "INR",
+            name: "Prithvi Campaign Donation",
+            description: `₹${campaignAmount} to campaign • ₹${poolCut} to platform pool`,
+            order_id: order.id,
+            handler: async function () {
+                const result = await fetch(`http://localhost:3000/campaign/donate/${campaignId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ amount })
+                });
+                const data = await result.json();
+                if (data.success) {
+                    alert(`🎉 Payment Successful!\n\n₹${data.campaignAmount} → Campaign\n₹${data.poolCut} → Platform Pool (6%)\n\nThank you for supporting! 🌱`);
+                } else {
+                    alert("Payment done but update failed. Contact support.");
+                }
+                setDonationAmount('');
+                fetchCampaigns();
+            },
+            modal: {
+                ondismiss: () => alert("Payment cancelled.")
+            },
+            theme: { color: "#22c55e" }
+        };
+
+        const rzp = new window.Razorpay(options);
+        rzp.on("payment.failed", () => alert("Payment failed 😢 Please try again."));
+        rzp.open();
+
+    } catch (err) {
+        alert("Something went wrong. Please try again.");
+    }
+};
 
     const getJoinStatus = (campaign) => {
         if (!currentUser) return 'none';
