@@ -70,6 +70,47 @@ passport.deserializeUser(async (id, done) => {
     }
 });
 
+// Monthly leaderboard (resets every month)
+app.get("/leaderboard/monthly", async (req, res) => {
+    try {
+        const now = new Date();
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+        const rankings = await postmodel.aggregate([
+            { $match: { userId: { $exists: true, $ne: null }, posted_on: { $gte: startOfMonth } } },
+            { $group: { _id: "$userId", totalLikes: { $sum: "$likes" } } },
+            { $sort: { totalLikes: -1 } },
+            { $limit: 10 },
+            { $lookup: { from: "users", localField: "_id", foreignField: "_id", as: "user" } },
+            { $unwind: "$user" },
+            { $project: { _id: 1, totalLikes: 1, "user.name": 1, "user.username": 1, "user.avatar": 1, "user._id": 1 } }
+        ]);
+
+        res.json({ success: true, rankings });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// All time leaderboard (existing logic, just aliased clearly)
+app.get("/leaderboard/alltime", async (req, res) => {
+    try {
+        const rankings = await postmodel.aggregate([
+            { $match: { userId: { $exists: true, $ne: null } } },
+            { $group: { _id: "$userId", totalLikes: { $sum: "$likes" } } },
+            { $sort: { totalLikes: -1 } },
+            { $limit: 10 },
+            { $lookup: { from: "users", localField: "_id", foreignField: "_id", as: "user" } },
+            { $unwind: "$user" },
+            { $project: { _id: 1, totalLikes: 1, "user.name": 1, "user.username": 1, "user.avatar": 1, "user._id": 1 } }
+        ]);
+
+        res.json({ success: true, rankings });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 app.get('/auth/google', passport.authenticate('google', { 
     scope: ['profile', 'email'] 
 }));
@@ -906,6 +947,71 @@ app.post("/donation/reward-leaderboard", async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
+});
+
+// Submit feedback for a completed campaign
+app.post("/campaign/feedback/:campaignId", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ success: false });
+    try {
+        const { rating, comment } = req.body;
+        const campaign = await campaignmodel.findById(req.params.campaignId);
+        if (!campaign) return res.status(404).json({ success: false, message: "Campaign not found" });
+        if (campaign.status !== 'completed') return res.status(400).json({ success: false, message: "Campaign not completed yet" });
+
+        const alreadyGiven = campaign.feedbacks?.some(
+            f => f.userId.toString() === req.user._id.toString()
+        );
+        if (alreadyGiven) return res.status(400).json({ success: false, message: "Already submitted feedback" });
+
+        campaign.feedbacks = campaign.feedbacks || [];
+        campaign.feedbacks.push({ userId: req.user._id, rating, comment });
+        await campaign.save();
+
+        // Recalculate trust score for campaign creator
+        const creatorCampaigns = await campaignmodel.find({
+            userId: campaign.userId,
+            status: 'completed',
+            'feedbacks.0': { $exists: true }
+        });
+
+        let totalRating = 0;
+        let totalCount = 0;
+        creatorCampaigns.forEach(c => {
+            c.feedbacks.forEach(f => {
+                totalRating += f.rating;
+                totalCount++;
+            });
+        });
+
+        const trustScore = totalCount > 0 ? Math.round((totalRating / (totalCount * 5)) * 100) : 0;
+        await usermodel.findByIdAndUpdate(campaign.userId, { trustScore });
+
+        res.json({ success: true, message: "Feedback submitted!" });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// Get feedbacks for a campaign
+app.get("/campaign/feedback/:campaignId", async (req, res) => {
+    try {
+        const campaign = await campaignmodel.findById(req.params.campaignId)
+            .populate('feedbacks.userId', 'name username avatar');
+        if (!campaign) return res.status(404).json({ success: false });
+        res.json({ success: true, feedbacks: campaign.feedbacks || [] });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// Get trust score for a user
+app.get("/user/trustscore/:userId", async (req, res) => {
+    try {
+        const user = await usermodel.findById(req.params.userId).select('trustScore');
+        res.json({ success: true, trustScore: user?.trustScore || 0 });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
 const paymentRoutes = require("./routes/payment");

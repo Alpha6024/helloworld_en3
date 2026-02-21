@@ -36,6 +36,14 @@ export default function Campaign() {
         fetchNotifications();
     }, []);
 
+    useEffect(() => {
+        const script = document.createElement("script");
+        script.src = "https://checkout.razorpay.com/v1/checkout.js";
+        script.async = true;
+        document.body.appendChild(script);
+        return () => document.body.removeChild(script);
+    }, []);
+
     const fetchCurrentUser = async () => {
         try {
             const res = await fetch('http://localhost:3000/auth/user', { credentials: 'include' });
@@ -74,9 +82,7 @@ export default function Campaign() {
         setRequestsModal(campaign);
         setRequestsLoading(true);
         try {
-            const res = await fetch(`http://localhost:3000/campaign/requests/${campaign._id}`, {
-                credentials: 'include'
-            });
+            const res = await fetch(`http://localhost:3000/campaign/requests/${campaign._id}`, { credentials: 'include' });
             const data = await res.json();
             if (data.success) setRequests(data.requests);
         } catch (err) { console.error(err); }
@@ -196,6 +202,7 @@ export default function Campaign() {
                 body: JSON.stringify({ amount }),
             });
             const order = await res.json();
+            if (!order.id) return alert('Failed to create order');
             const options = {
                 key: "rzp_test_SGtmofw4CWXzzG",
                 amount: order.amount,
@@ -237,6 +244,20 @@ export default function Campaign() {
     const isCreator = (campaign) => {
         if (!currentUser) return false;
         return campaign.userId?._id === currentUser._id || campaign.userId === currentUser._id;
+    };
+
+    const isMember = (campaign) => {
+        if (!currentUser) return false;
+        return campaign.joinRequests?.some(
+            r => (r.userId === currentUser._id || r.userId?._id === currentUser._id) && r.status === 'accepted'
+        );
+    };
+
+    const hasGivenFeedback = (campaign) => {
+        if (!currentUser) return false;
+        return campaign.feedbacks?.some(
+            f => f.userId === currentUser._id || f.userId?._id === currentUser._id
+        );
     };
 
     return (
@@ -299,7 +320,6 @@ export default function Campaign() {
                             onChange={e => setForm(prev => ({ ...prev, title: e.target.value }))}
                             className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-green-500"
                         />
-
                         <textarea
                             placeholder="Describe your campaign..."
                             value={form.description}
@@ -468,30 +488,58 @@ export default function Campaign() {
 
                             <div className="p-4">
                                 {/* Status + Buttons */}
-                                <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
                                     <span className={`text-xs font-bold px-3 py-1 rounded-full ${campaign.status === 'active' ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-500'}`}>
                                         {campaign.status === 'active' ? '🟢 ACTIVE' : '✅ COMPLETED'}
                                     </span>
-                                    {isCreator(campaign) && (
-                                        <div className="flex gap-2">
+
+                                    <div className="flex gap-2 flex-wrap">
+                                        {/* Feedback button — for accepted members on completed campaigns */}
+                                        {campaign.status === 'completed' && !isCreator(campaign) && isMember(campaign) && (
                                             <button
-                                                onClick={() => fetchRequests(campaign)}
-                                                className="relative text-xs text-orange-500 font-semibold border border-orange-200 px-3 py-1 rounded-full"
+                                                onClick={() => navigate(`/acc/campaign/feedback/${campaign._id}`)}
+                                                className={`text-xs font-semibold border px-3 py-1 rounded-full ${
+                                                    hasGivenFeedback(campaign)
+                                                        ? 'text-gray-400 border-gray-200'
+                                                        : 'text-purple-500 border-purple-200'
+                                                }`}
                                             >
-                                                Requests
-                                                {campaign.joinRequests?.filter(r => r.status === 'pending').length > 0 && (
-                                                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">
-                                                        {campaign.joinRequests.filter(r => r.status === 'pending').length}
-                                                    </span>
-                                                )}
+                                                {hasGivenFeedback(campaign) ? '✅ Reviewed' : '⭐ Give Feedback'}
                                             </button>
-                                            <button
-                                                onClick={() => openEditForm(campaign)}
-                                                className="text-xs text-blue-500 font-semibold border border-blue-200 px-3 py-1 rounded-full"
-                                            >Edit</button>
-                                        </div>
-                                    )}
+                                        )}
+
+                                        {isCreator(campaign) && (
+                                            <>
+                                                <button
+                                                    onClick={() => fetchRequests(campaign)}
+                                                    className="relative text-xs text-orange-500 font-semibold border border-orange-200 px-3 py-1 rounded-full"
+                                                >
+                                                    Requests
+                                                    {campaign.joinRequests?.filter(r => r.status === 'pending').length > 0 && (
+                                                        <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">
+                                                            {campaign.joinRequests.filter(r => r.status === 'pending').length}
+                                                        </span>
+                                                    )}
+                                                </button>
+                                                <button
+                                                    onClick={() => openEditForm(campaign)}
+                                                    className="text-xs text-blue-500 font-semibold border border-blue-200 px-3 py-1 rounded-full"
+                                                >Edit</button>
+                                            </>
+                                        )}
+                                    </div>
                                 </div>
+
+                                {/* Trust score for creator */}
+                                {campaign.feedbacks?.length > 0 && (
+                                    <div className="flex items-center gap-1 mb-2">
+                                        <span className="text-xs text-gray-500">Creator Trust:</span>
+                                        <span className="text-xs font-bold text-green-600">
+                                            {Math.round((campaign.feedbacks.reduce((s, f) => s + f.rating, 0) / (campaign.feedbacks.length * 5)) * 100)}%
+                                        </span>
+                                        <span className="text-xs text-gray-400">({campaign.feedbacks.length} reviews)</span>
+                                    </div>
+                                )}
 
                                 {/* Creator info */}
                                 <div className="flex items-center gap-2 mb-3">
@@ -549,11 +597,10 @@ export default function Campaign() {
                                     </div>
                                 </div>
 
-                                {/* Action Buttons - only for non-creators */}
-                                {!isCreator(campaign) && (
+                                {/* Action Buttons - only for non-creators on active campaigns */}
+                                {!isCreator(campaign) && campaign.status === 'active' && (
                                     <div className="space-y-2">
-                                        {/* Join Button */}
-                                        {campaign.status === 'active' && (() => {
+                                        {(() => {
                                             const status = getJoinStatus(campaign);
                                             if (status === 'accepted') return (
                                                 <button disabled className="w-full bg-gray-100 text-green-600 font-semibold py-2.5 rounded-xl text-sm">
@@ -580,24 +627,21 @@ export default function Campaign() {
                                             );
                                         })()}
 
-                                        {/* Donate - only active campaigns */}
-                                        {campaign.status === 'active' && (
-                                            <div className="flex gap-2">
-                                                <input
-                                                    type="number"
-                                                    placeholder="Enter amount ₹"
-                                                    value={donationAmount}
-                                                    onChange={e => setDonationAmount(e.target.value)}
-                                                    className="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                                                />
-                                                <button
-                                                    onClick={() => payNow(campaign._id)}
-                                                    className="bg-blue-500 text-white font-semibold px-4 py-2.5 rounded-xl text-sm hover:bg-blue-600 transition-colors"
-                                                >
-                                                    Donate ❤️
-                                                </button>
-                                            </div>
-                                        )}
+                                        <div className="flex gap-2">
+                                            <input
+                                                type="number"
+                                                placeholder="Enter amount ₹"
+                                                value={donationAmount}
+                                                onChange={e => setDonationAmount(e.target.value)}
+                                                className="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                                            />
+                                            <button
+                                                onClick={() => payNow(campaign._id)}
+                                                className="bg-blue-500 text-white font-semibold px-4 py-2.5 rounded-xl text-sm hover:bg-blue-600 transition-colors"
+                                            >
+                                                Donate ❤️
+                                            </button>
+                                        </div>
                                     </div>
                                 )}
                             </div>
@@ -605,23 +649,22 @@ export default function Campaign() {
                     ))
                 )}
             </div>
+
             <button
-    onClick={() => navigate("/acc/bot")}
-    className="fixed bottom-24 right-4 w-14 h-14 bg-green-500 rounded-full flex items-center justify-center shadow-xl z-20 hover:bg-green-600 transition-colors"
->
-    <span className="text-2xl">🤖</span>
-</button>
+                onClick={() => navigate("/acc/bot")}
+                className="fixed bottom-24 right-4 w-14 h-14 bg-green-500 rounded-full flex items-center justify-center shadow-xl z-20 hover:bg-green-600 transition-colors"
+            >
+                <span className="text-2xl">🤖</span>
+            </button>
 
             {/* Bottom Nav */}
             <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 max-w-md mx-auto">
                 <div className="flex items-center justify-around py-3">
                     <button onClick={() => navigate("/acc/home")} className="flex flex-col items-center gap-1 text-gray-500">
-                        <Home className="w-6 h-6" />
-                        <span className="text-xs">Home</span>
+                        <Home className="w-6 h-6" /><span className="text-xs">Home</span>
                     </button>
                     <button className="flex flex-col items-center gap-1 text-green-600">
-                        <Target className="w-6 h-6" fill="currentColor" />
-                        <span className="text-xs">Campaign</span>
+                        <Target className="w-6 h-6" fill="currentColor" /><span className="text-xs">Campaign</span>
                     </button>
                     <button onClick={() => navigate("/acc/home/post")} className="flex flex-col items-center gap-1 text-gray-500">
                         <div className="w-12 h-12 bg-green-500 rounded-full flex items-center justify-center -mt-6 shadow-lg">
@@ -629,12 +672,10 @@ export default function Campaign() {
                         </div>
                     </button>
                     <button onClick={() => navigate("/acc/home/leaderboard")} className="flex flex-col items-center gap-1 text-gray-500">
-                        <Trophy className="w-6 h-6" />
-                        <span className="text-xs">Leaderboard</span>
+                        <Trophy className="w-6 h-6" /><span className="text-xs">Leaderboard</span>
                     </button>
                     <button onClick={() => navigate("/acc/home/profile")} className="flex flex-col items-center gap-1 text-gray-500">
-                        <User className="w-6 h-6" />
-                        <span className="text-xs">Profile</span>
+                        <User className="w-6 h-6" /><span className="text-xs">Profile</span>
                     </button>
                 </div>
             </div>

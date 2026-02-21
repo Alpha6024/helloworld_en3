@@ -17,6 +17,7 @@ import Newacc from "./components/newacc"
 import CreateAcc from "./components/createacc";
 import Bot from "./components/bot";
 import Fund from "./components/fund";
+import Feedback from "./components/feedback";
 
 const router = createBrowserRouter([
   {
@@ -62,7 +63,11 @@ const router = createBrowserRouter([
   {
     path:"/acc/home/fund",
     element:<Fund/>
-  }
+  },
+  {
+    path:"/acc/campaign/feedback/:campaignId",
+    element:<Feedback/>
+}
 ]);
 
 createRoot(document.getElementById("root")).render(

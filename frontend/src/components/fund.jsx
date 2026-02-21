@@ -1,46 +1,73 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
 
 const API = "http://localhost:3000";
+const RAZORPAY_KEY = "rzp_test_SGtmofw4CWXzzG";
 
-export default function fund() {
+export default function Fund() {
+  const navigate = useNavigate();
   const [amount, setAmount] = useState("");
   const [campaigns, setCampaigns] = useState([]);
   const [leaderboard, setLeaderboard] = useState([]);
+  const [leaderboardTab, setLeaderboardTab] = useState("monthly");
   const [transactions, setTransactions] = useState([]);
   const [totalPool, setTotalPool] = useState(0);
-  const [tab, setTab] = useState("donate"); // donate | campaigns | leaderboard | tracker
+  const [tab, setTab] = useState("donate");
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
 
+useEffect(() => {
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.async = true;
+    document.body.appendChild(script);
+    return () => document.body.removeChild(script);
+}, []);
+
   useEffect(() => {
     fetchCampaigns();
-    fetchLeaderboard();
     fetchTransactions();
     fetchPool();
   }, []);
 
+  useEffect(() => {
+    fetchLeaderboard();
+  }, [leaderboardTab]);
+
   async function fetchCampaigns() {
-    const res = await fetch(`${API}/campaign/all`, { credentials: "include" });
-    const data = await res.json();
-    if (data.success) setCampaigns(data.campaigns.filter(c => c.userId?.username === "platform" || c.isPlatform));
+    try {
+      const res = await fetch(`${API}/campaign/all`, { credentials: "include" });
+      const data = await res.json();
+      if (data.success) setCampaigns(data.campaigns);
+    } catch (err) { console.error(err); }
   }
 
   async function fetchLeaderboard() {
-    const res = await fetch(`${API}/leaderboard`);
-    const data = await res.json();
-    if (data.success) setLeaderboard(data.rankings.slice(0, 3)); // top 3 get rewards
+    try {
+      const url = leaderboardTab === "monthly"
+        ? `${API}/leaderboard/monthly`
+        : `${API}/leaderboard/alltime`;
+      const res = await fetch(url, { credentials: "include" });
+      const data = await res.json();
+      if (data.success) setLeaderboard(data.rankings.slice(0, 3));
+    } catch (err) { console.error(err); }
   }
 
   async function fetchTransactions() {
-    const res = await fetch(`${API}/donation/transactions`, { credentials: "include" });
-    const data = await res.json();
-    if (data.success) setTransactions(data.transactions);
+    try {
+      const res = await fetch(`${API}/donation/transactions`, { credentials: "include" });
+      const data = await res.json();
+      if (data.success) setTransactions(data.transactions);
+    } catch (err) { console.error(err); }
   }
 
   async function fetchPool() {
-    const res = await fetch(`${API}/donation/pool`);
-    const data = await res.json();
-    if (data.success) setTotalPool(data.totalPool);
+    try {
+      const res = await fetch(`${API}/donation/pool`);
+      const data = await res.json();
+      if (data.success) setTotalPool(data.totalPool);
+    } catch (err) { console.error(err); }
   }
 
   async function handleDonate() {
@@ -52,7 +79,6 @@ export default function fund() {
     setMsg("");
 
     try {
-      // 1. Create Razorpay order
       const orderRes = await fetch(`${API}/payment/create-order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -61,16 +87,20 @@ export default function fund() {
       });
       const order = await orderRes.json();
 
-      // 2. Open Razorpay checkout
+      if (!order.id) {
+        setMsg("Failed to create payment order. Try again.");
+        setLoading(false);
+        return;
+      }
+
       const options = {
-        key: import.meta.env.VITE_RAZORPAY_KEY_ID,
+        key: RAZORPAY_KEY,
         amount: order.amount,
-        currency: order.currency,
+        currency: order.currency || "INR",
         name: "EcoAction Platform",
         description: "Community Donation Pool",
         order_id: order.id,
         handler: async function (response) {
-          // 3. Verify & record donation
           const verifyRes = await fetch(`${API}/donation/verify`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -97,14 +127,15 @@ export default function fund() {
       };
 
       const rzp = new window.Razorpay(options);
+      rzp.on("payment.failed", () => setMsg("Payment failed. Please try again."));
       rzp.open();
     } catch (err) {
+      console.error(err);
       setMsg("Something went wrong. Try again.");
     }
     setLoading(false);
   }
 
-  // Admin: allocate pool to campaign
   async function allocateToCampaign(campaignId, allocAmount) {
     const res = await fetch(`${API}/donation/allocate`, {
       method: "POST",
@@ -118,7 +149,6 @@ export default function fund() {
     fetchPool();
   }
 
-  // Admin: reward leaderboard user
   async function rewardLeaderboard(userId, rewardAmount) {
     const res = await fetch(`${API}/donation/reward-leaderboard`, {
       method: "POST",
@@ -133,14 +163,24 @@ export default function fund() {
   }
 
   const tabs = ["donate", "campaigns", "leaderboard", "tracker"];
+  const rewardAmounts = [500, 300, 200];
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-950 via-emerald-900 to-teal-900 text-white font-sans">
-      {/* Load Razorpay */}
-      <script src="https://checkout.razorpay.com/v1/checkout.js" />
+
+      {/* Back Button */}
+      <div className="sticky top-0 z-10 bg-green-950 bg-opacity-80 backdrop-blur-sm border-b border-emerald-800 px-4 py-3 flex items-center gap-3">
+        <button
+          onClick={() => navigate("/acc/home")}
+          className="flex items-center gap-2 text-emerald-300 hover:text-white transition-colors"
+        >
+          <ArrowLeft className="w-5 h-5" />
+          <span className="text-sm font-medium">Back to Home</span>
+        </button>
+      </div>
 
       {/* Header */}
-      <div className="text-center py-10 px-4">
+      <div className="text-center py-8 px-4">
         <h1 className="text-4xl font-bold tracking-tight text-emerald-300">🌱 EcoAction Pool</h1>
         <p className="text-emerald-400 mt-1 text-sm">Your donation funds green campaigns & rewards eco-heroes</p>
         <div className="mt-4 inline-block bg-emerald-800 border border-emerald-600 rounded-2xl px-8 py-3">
@@ -180,7 +220,11 @@ export default function fund() {
                 <button
                   key={preset}
                   onClick={() => setAmount(String(preset))}
-                  className="px-4 py-2 bg-emerald-800 border border-emerald-600 rounded-xl text-sm hover:bg-emerald-700 transition"
+                  className={`px-4 py-2 rounded-xl text-sm transition border ${
+                    amount === String(preset)
+                      ? "bg-emerald-500 border-emerald-400 text-white"
+                      : "bg-emerald-800 border-emerald-600 hover:bg-emerald-700"
+                  }`}
                 >
                   ₹{preset}
                 </button>
@@ -193,7 +237,11 @@ export default function fund() {
               onChange={e => setAmount(e.target.value)}
               className="w-full bg-emerald-950 border border-emerald-700 rounded-xl px-4 py-3 text-white placeholder-emerald-600 focus:outline-none focus:border-emerald-400 mb-4"
             />
-            {msg && <p className="text-sm text-emerald-300 mb-3">{msg}</p>}
+            {msg && (
+              <p className={`text-sm mb-3 ${msg.includes("🎉") ? "text-emerald-300" : "text-red-400"}`}>
+                {msg}
+              </p>
+            )}
             <button
               onClick={handleDonate}
               disabled={loading}
@@ -207,9 +255,9 @@ export default function fund() {
         {/* CAMPAIGNS TAB */}
         {tab === "campaigns" && (
           <div className="space-y-4">
-            <h2 className="text-xl font-semibold text-emerald-200 mb-2">Platform Campaigns</h2>
+            <h2 className="text-xl font-semibold text-emerald-200 mb-2">All Campaigns</h2>
             <p className="text-emerald-500 text-sm mb-4">Donations are distributed to these campaigns by the platform admin.</p>
-            {campaigns.length === 0 && <p className="text-emerald-600 text-sm">No platform campaigns yet.</p>}
+            {campaigns.length === 0 && <p className="text-emerald-600 text-sm">No campaigns yet.</p>}
             {campaigns.map(c => (
               <div key={c._id} className="bg-emerald-900 border border-emerald-700 rounded-2xl p-5">
                 {c.image && <img src={c.image} alt={c.title} className="w-full h-36 object-cover rounded-xl mb-3" />}
@@ -218,7 +266,9 @@ export default function fund() {
                     <h3 className="font-semibold text-white">{c.title}</h3>
                     <p className="text-emerald-400 text-xs mt-1">{c.description}</p>
                   </div>
-                  <span className={`text-xs px-2 py-1 rounded-full ${c.status === "completed" ? "bg-gray-700 text-gray-400" : "bg-emerald-800 text-emerald-300"}`}>
+                  <span className={`text-xs px-2 py-1 rounded-full ml-2 shrink-0 ${
+                    c.status === "completed" ? "bg-gray-700 text-gray-400" : "bg-emerald-800 text-emerald-300"
+                  }`}>
                     {c.status}
                   </span>
                 </div>
@@ -227,7 +277,7 @@ export default function fund() {
                     <span>Progress</span><span>{c.progress || 0}%</span>
                   </div>
                   <div className="w-full bg-emerald-950 rounded-full h-2">
-                    <div className="bg-emerald-400 h-2 rounded-full" style={{ width: `${c.progress || 0}%` }} />
+                    <div className="bg-emerald-400 h-2 rounded-full transition-all" style={{ width: `${c.progress || 0}%` }} />
                   </div>
                 </div>
                 <p className="text-emerald-300 text-sm mt-2 font-medium">₹{c.amountRaised || 0} raised</p>
@@ -238,25 +288,64 @@ export default function fund() {
 
         {/* LEADERBOARD TAB */}
         {tab === "leaderboard" && (
-          <div className="space-y-3">
+          <div>
             <h2 className="text-xl font-semibold text-emerald-200 mb-2">Top Eco-Heroes 🏆</h2>
-            <p className="text-emerald-500 text-sm mb-4">Top 3 contributors receive rewards from the donation pool to fund their campaigns.</p>
-            {leaderboard.map((u, i) => (
-              <div key={u._id} className="bg-emerald-900 border border-emerald-700 rounded-2xl p-4 flex items-center gap-4">
-                <div className={`text-2xl font-black ${i === 0 ? "text-yellow-400" : i === 1 ? "text-gray-400" : "text-amber-700"}`}>
-                  #{i + 1}
-                </div>
-                {u.user.avatar && <img src={u.user.avatar} alt="" className="w-10 h-10 rounded-full object-cover" />}
-                <div className="flex-1">
-                  <p className="font-semibold">{u.user.name}</p>
-                  <p className="text-emerald-400 text-xs">@{u.user.username} · {u.totalLikes} likes</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-xs text-emerald-500">Reward</p>
-                  <p className="text-emerald-300 font-bold">₹{i === 0 ? "500" : i === 1 ? "300" : "200"}</p>
-                </div>
+            <p className="text-emerald-500 text-sm mb-4">Top 3 contributors receive rewards from the donation pool.</p>
+
+            {/* Monthly / All Time toggle */}
+            <div className="flex gap-2 mb-5">
+              <button
+                onClick={() => setLeaderboardTab("monthly")}
+                className={`flex-1 py-2 rounded-xl text-sm font-medium transition ${
+                  leaderboardTab === "monthly"
+                    ? "bg-emerald-500 text-white"
+                    : "bg-emerald-900 border border-emerald-700 text-emerald-300"
+                }`}
+              >
+                🗓 Monthly
+              </button>
+              <button
+                onClick={() => setLeaderboardTab("alltime")}
+                className={`flex-1 py-2 rounded-xl text-sm font-medium transition ${
+                  leaderboardTab === "alltime"
+                    ? "bg-emerald-500 text-white"
+                    : "bg-emerald-900 border border-emerald-700 text-emerald-300"
+                }`}
+              >
+                🏆 All Time
+              </button>
+            </div>
+
+            {leaderboard.length === 0 ? (
+              <p className="text-emerald-600 text-sm text-center py-8">
+                {leaderboardTab === "monthly" ? "No posts this month yet!" : "No rankings yet"}
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {leaderboard.map((u, i) => (
+                  <div key={u._id} className="bg-emerald-900 border border-emerald-700 rounded-2xl p-4 flex items-center gap-4">
+                    <div className={`text-2xl font-black ${i === 0 ? "text-yellow-400" : i === 1 ? "text-gray-400" : "text-amber-700"}`}>
+                      #{i + 1}
+                    </div>
+                    {u.user.avatar ? (
+                      <img src={u.user.avatar} alt="" className="w-10 h-10 rounded-full object-cover" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-emerald-700 flex items-center justify-center text-white font-bold">
+                        {u.user.name?.[0] || "?"}
+                      </div>
+                    )}
+                    <div className="flex-1">
+                      <p className="font-semibold">{u.user.name}</p>
+                      <p className="text-emerald-400 text-xs">@{u.user.username} · {u.totalLikes} likes</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs text-emerald-500">Reward</p>
+                      <p className="text-emerald-300 font-bold">₹{rewardAmounts[i]}</p>
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
         )}
 
@@ -270,7 +359,9 @@ export default function fund() {
                 <div key={t._id} className="bg-emerald-900 border border-emerald-700 rounded-2xl p-4 flex justify-between items-center">
                   <div>
                     <p className="text-sm font-medium text-white">{t.description}</p>
-                    <p className="text-xs text-emerald-500 mt-0.5">{new Date(t.createdAt).toLocaleDateString()}</p>
+                    <p className="text-xs text-emerald-500 mt-0.5">
+                      {new Date(t.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    </p>
                   </div>
                   <div className="text-right">
                     <p className={`font-bold ${t.type === "donation" ? "text-emerald-400" : "text-orange-400"}`}>
