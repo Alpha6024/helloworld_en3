@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Users, Target, LogOut, DollarSign, Send, Eye, Lock } from "lucide-react";
+import { Users, Target, LogOut, DollarSign, Send, Eye, Lock, Shield, AlertTriangle, CheckCircle, XCircle, Flag, Trash2, RefreshCw } from "lucide-react";
 
 const ADMIN_USERNAME = "admin";
 const ADMIN_PASSWORD = "prithvi@2026";
@@ -22,7 +22,12 @@ export default function Admin() {
     const [allocMsg, setAllocMsg] = useState({});
     const [allocating, setAllocating] = useState({});
 
-    // Load Razorpay script
+    // Scam detection state
+    const [scamCampaigns, setScamCampaigns] = useState([]);
+    const [scamLoading, setScamLoading] = useState(false);
+    const [expandedScam, setExpandedScam] = useState(null);
+    const [actionMsg, setActionMsg] = useState({});
+
     useEffect(() => {
         const script = document.createElement("script");
         script.src = "https://checkout.razorpay.com/v1/checkout.js";
@@ -32,8 +37,16 @@ export default function Admin() {
     }, []);
 
     useEffect(() => {
-        if (loggedIn) fetchAll();
+        if (loggedIn) {
+            fetchAll();
+        }
     }, [loggedIn]);
+
+    useEffect(() => {
+        if (loggedIn && tab === "scam") {
+            fetchScamData();
+        }
+    }, [tab, loggedIn]);
 
     const handleLogin = () => {
         if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
@@ -70,10 +83,52 @@ export default function Admin() {
         }
     };
 
-    // Step 1: Validate → open Razorpay → on success call backend to allocate
+    const fetchScamData = async () => {
+        setScamLoading(true);
+        try {
+            const res = await fetch(`${API}/admin/scam-detection`, { credentials: "include" });
+            const data = await res.json();
+            if (data.success) setScamCampaigns(data.campaigns);
+        } catch (err) {
+            console.error(err);
+        }
+        setScamLoading(false);
+    };
+
+    const handleFlag = async (campaignId, reason) => {
+        try {
+            await fetch(`${API}/admin/campaign/flag/${campaignId}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ flagged: true, reason })
+            });
+            setActionMsg(prev => ({ ...prev, [campaignId]: "🚩 Campaign flagged" }));
+            fetchScamData();
+        } catch (err) {
+            setActionMsg(prev => ({ ...prev, [campaignId]: "Failed" }));
+        }
+    };
+
+    const handleRemove = async (campaignId) => {
+        if (!window.confirm("Are you sure? This will permanently delete the campaign and notify the creator.")) return;
+        try {
+            const res = await fetch(`${API}/admin/campaign/remove/${campaignId}`, {
+                method: "DELETE",
+                credentials: "include"
+            });
+            const data = await res.json();
+            if (data.success) {
+                setActionMsg(prev => ({ ...prev, [campaignId]: "✅ Removed" }));
+                fetchScamData();
+            }
+        } catch (err) {
+            setActionMsg(prev => ({ ...prev, [campaignId]: "Failed" }));
+        }
+    };
+
     const handleAllocate = async (campaignId, campaignTitle) => {
         const amount = Number(allocAmount[campaignId]);
-
         if (!amount || amount < 1) {
             setAllocMsg(prev => ({ ...prev, [campaignId]: "Enter a valid amount" }));
             return;
@@ -82,26 +137,20 @@ export default function Admin() {
             setAllocMsg(prev => ({ ...prev, [campaignId]: `Exceeds pool balance (₹${stats.pool})` }));
             return;
         }
-
         setAllocating(prev => ({ ...prev, [campaignId]: true }));
         setAllocMsg(prev => ({ ...prev, [campaignId]: "" }));
-
         try {
-            // Step 2: Create Razorpay order
             const orderRes = await fetch(`${API}/payment/create-order`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ amount }),
             });
             const order = await orderRes.json();
-
             if (!order.id) {
                 setAllocMsg(prev => ({ ...prev, [campaignId]: "Failed to create payment order" }));
                 setAllocating(prev => ({ ...prev, [campaignId]: false }));
                 return;
             }
-
-            // Step 3: Open Razorpay checkout
             const options = {
                 key: RAZORPAY_KEY,
                 amount: order.amount,
@@ -110,7 +159,6 @@ export default function Admin() {
                 description: `Allocating ₹${amount} to "${campaignTitle}"`,
                 order_id: order.id,
                 handler: async function (response) {
-                    // Step 4: After payment success → allocate from pool to campaign
                     try {
                         const allocRes = await fetch(`${API}/donation/admin-allocate`, {
                             method: "POST",
@@ -145,17 +193,14 @@ export default function Admin() {
                 prefill: { name: "Admin", email: "admin@prithvi.com" },
                 theme: { color: "#22c55e" },
             };
-
             const rzp = new window.Razorpay(options);
             rzp.on("payment.failed", () => {
                 setAllocMsg(prev => ({ ...prev, [campaignId]: "Payment failed" }));
             });
             rzp.open();
-
         } catch (err) {
             setAllocMsg(prev => ({ ...prev, [campaignId]: "Something went wrong" }));
         }
-
         setAllocating(prev => ({ ...prev, [campaignId]: false }));
     };
 
@@ -164,7 +209,13 @@ export default function Admin() {
     const totalDonations = transactions.filter(t => t.type === "donation").reduce((s, t) => s + t.amount, 0);
     const totalAllocated = transactions.filter(t => t.type === "allocation").reduce((s, t) => s + t.amount, 0);
 
-    // ── LOGIN SCREEN ──────────────────────────────
+    const highRisk = scamCampaigns.filter(c => c.riskLevel === "high");
+    const mediumRisk = scamCampaigns.filter(c => c.riskLevel === "medium");
+    const lowRisk = scamCampaigns.filter(c => c.riskLevel === "low");
+
+    const severityColor = (s) => s === "high" ? "text-red-400 bg-red-900" : s === "medium" ? "text-yellow-400 bg-yellow-900" : "text-blue-400 bg-blue-900";
+    const riskBadgeColor = (level) => level === "high" ? "bg-red-500" : level === "medium" ? "bg-yellow-500" : "bg-green-500";
+
     if (!loggedIn) {
         return (
             <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
@@ -200,10 +251,7 @@ export default function Admin() {
                             />
                         </div>
                         {loginError && <p className="text-red-400 text-xs mb-4 text-center">{loginError}</p>}
-                        <button
-                            onClick={handleLogin}
-                            className="w-full bg-green-500 hover:bg-green-400 text-white font-semibold py-3 rounded-xl transition"
-                        >
+                        <button onClick={handleLogin} className="w-full bg-green-500 hover:bg-green-400 text-white font-semibold py-3 rounded-xl transition">
                             Login
                         </button>
                     </div>
@@ -212,7 +260,6 @@ export default function Admin() {
         );
     }
 
-    // ── DASHBOARD ─────────────────────────────────
     return (
         <div className="min-h-screen bg-gray-950 text-white">
             <div className="sticky top-0 bg-gray-900 border-b border-gray-800 z-10">
@@ -223,10 +270,7 @@ export default function Admin() {
                         </div>
                         <h1 className="font-bold text-lg">Prithvi Admin</h1>
                     </div>
-                    <button
-                        onClick={() => setLoggedIn(false)}
-                        className="flex items-center gap-2 text-gray-400 hover:text-red-400 transition text-sm"
-                    >
+                    <button onClick={() => setLoggedIn(false)} className="flex items-center gap-2 text-gray-400 hover:text-red-400 transition text-sm">
                         <LogOut className="w-4 h-4" /> Logout
                     </button>
                 </div>
@@ -268,17 +312,34 @@ export default function Admin() {
                     </div>
                 </div>
 
+                {/* Pool Low Balance Warning */}
+                {stats.pool < 500 && stats.pool >= 0 && (
+                    <div className="bg-red-900 border border-red-700 rounded-2xl p-4 mb-6 flex items-center gap-3">
+                        <AlertTriangle className="w-5 h-5 text-red-400 shrink-0" />
+                        <div>
+                            <p className="text-red-300 font-semibold text-sm">⚠️ Pool Low Balance Alert</p>
+                            <p className="text-red-400 text-xs mt-0.5">Pool balance is ₹{stats.pool} — below ₹500 threshold. Consider encouraging more donations.</p>
+                        </div>
+                    </div>
+                )}
+
                 {/* Tabs */}
                 <div className="flex gap-2 mb-6 flex-wrap">
-                    {["overview", "allocate", "users", "transactions"].map(t => (
+                    {["overview", "allocate", "users", "transactions", "scam"].map(t => (
                         <button
                             key={t}
                             onClick={() => setTab(t)}
-                            className={`px-4 py-2 rounded-xl text-sm font-medium capitalize transition ${
+                            className={`px-4 py-2 rounded-xl text-sm font-medium capitalize transition flex items-center gap-1.5 ${
                                 tab === t ? "bg-green-500 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"
                             }`}
                         >
-                            {t}
+                            {t === "scam" && <Shield className="w-3.5 h-3.5" />}
+                            {t === "scam" ? "Scam Detection" : t}
+                            {t === "scam" && highRisk.length > 0 && (
+                                <span className="bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold">
+                                    {highRisk.length}
+                                </span>
+                            )}
                         </button>
                     ))}
                 </div>
@@ -339,7 +400,6 @@ export default function Admin() {
                             </div>
                             <Send className="w-10 h-10 text-emerald-400 opacity-50" />
                         </div>
-
                         <h2 className="font-semibold text-white mb-4">Send Funds to Campaigns</h2>
                         <div className="space-y-4">
                             {campaigns.length === 0 && <p className="text-gray-500 text-sm">No campaigns found.</p>}
@@ -350,28 +410,23 @@ export default function Admin() {
                                             <p className="font-semibold">{c.title}</p>
                                             <p className="text-xs text-gray-400">@{c.userId?.username || "unknown"}</p>
                                         </div>
-                                        <span className={`text-xs px-2 py-1 rounded-full font-medium ${
-                                            c.status === "active" ? "bg-green-900 text-green-400" : "bg-gray-800 text-gray-500"
-                                        }`}>
+                                        <span className={`text-xs px-2 py-1 rounded-full font-medium ${c.status === "active" ? "bg-green-900 text-green-400" : "bg-gray-800 text-gray-500"}`}>
                                             {c.status}
                                         </span>
                                     </div>
-
                                     <div className="flex items-center gap-2 mb-2">
                                         <div className="flex-1 bg-gray-800 rounded-full h-2">
                                             <div className="bg-green-500 h-2 rounded-full" style={{ width: `${c.progress || 0}%` }} />
                                         </div>
                                         <span className="text-xs text-gray-400 w-10">{c.progress || 0}%</span>
                                     </div>
-
                                     <div className="flex gap-4 text-xs text-gray-500 mb-4 flex-wrap">
                                         <span>👥 {c.members?.length || 0}/{c.peopleNeeded} members</span>
                                         <span>💰 ₹{c.amountRaised || 0} raised</span>
                                         {c.feedbacks?.length > 0 && (
-                                            <span>⭐ {(c.feedbacks.reduce((s, f) => s + f.rating, 0) / c.feedbacks.length).toFixed(1)}/5 ({c.feedbacks.length} reviews)</span>
+                                            <span>⭐ {(c.feedbacks.reduce((s, f) => s + f.rating, 0) / c.feedbacks.length).toFixed(1)}/5</span>
                                         )}
                                     </div>
-
                                     <div className="flex gap-2">
                                         <input
                                             type="number"
@@ -389,13 +444,8 @@ export default function Admin() {
                                             {allocating[c._id] ? "Opening..." : "Pay & Send"}
                                         </button>
                                     </div>
-
                                     {allocMsg[c._id] && (
-                                        <p className={`text-xs mt-2 font-medium ${
-                                            allocMsg[c._id].startsWith("✅")
-                                                ? "text-green-400"
-                                                : "text-red-400"
-                                        }`}>
+                                        <p className={`text-xs mt-2 font-medium ${allocMsg[c._id].startsWith("✅") ? "text-green-400" : "text-red-400"}`}>
                                             {allocMsg[c._id]}
                                         </p>
                                     )}
@@ -429,11 +479,9 @@ export default function Admin() {
                                     </div>
                                     <div className="text-right shrink-0">
                                         <p className="text-xs text-gray-500">Trust</p>
-                                        <p className={`text-sm font-bold ${
-                                            (u.trustScore || 0) >= 75 ? "text-green-400"
-                                            : (u.trustScore || 0) >= 50 ? "text-yellow-400"
-                                            : "text-gray-400"
-                                        }`}>{u.trustScore || 0}%</p>
+                                        <p className={`text-sm font-bold ${(u.trustScore || 0) >= 75 ? "text-green-400" : (u.trustScore || 0) >= 50 ? "text-yellow-400" : "text-gray-400"}`}>
+                                            {u.trustScore || 0}%
+                                        </p>
                                     </div>
                                 </div>
                             ))}
@@ -454,10 +502,7 @@ export default function Admin() {
                                     <div>
                                         <p className="text-sm font-medium">{t.description}</p>
                                         <p className="text-xs text-gray-500 mt-0.5">
-                                            {new Date(t.createdAt).toLocaleDateString('en-IN', {
-                                                day: 'numeric', month: 'short', year: 'numeric',
-                                                hour: '2-digit', minute: '2-digit'
-                                            })}
+                                            {new Date(t.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
                                         </p>
                                     </div>
                                     <div className="text-right">
@@ -469,6 +514,191 @@ export default function Admin() {
                                 </div>
                             ))}
                         </div>
+                    </div>
+                )}
+
+                {/* SCAM DETECTION TAB */}
+                {tab === "scam" && (
+                    <div>
+                        {/* Summary bar */}
+                        <div className="grid grid-cols-3 gap-4 mb-6">
+                            <div className="bg-red-950 border border-red-800 rounded-2xl p-4 text-center">
+                                <p className="text-3xl font-black text-red-400">{highRisk.length}</p>
+                                <p className="text-xs text-red-500 mt-1">🚨 High Risk</p>
+                            </div>
+                            <div className="bg-yellow-950 border border-yellow-800 rounded-2xl p-4 text-center">
+                                <p className="text-3xl font-black text-yellow-400">{mediumRisk.length}</p>
+                                <p className="text-xs text-yellow-500 mt-1">⚠️ Suspicious</p>
+                            </div>
+                            <div className="bg-green-950 border border-green-800 rounded-2xl p-4 text-center">
+                                <p className="text-3xl font-black text-green-400">{lowRisk.length}</p>
+                                <p className="text-xs text-green-500 mt-1">✅ Clean</p>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center justify-between mb-4">
+                            <h2 className="font-semibold text-white">Campaign Risk Analysis</h2>
+                            <button
+                                onClick={fetchScamData}
+                                className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition"
+                            >
+                                <RefreshCw className="w-3.5 h-3.5" /> Refresh
+                            </button>
+                        </div>
+
+                        {scamLoading ? (
+                            <div className="flex justify-center py-20">
+                                <div className="w-8 h-8 border-4 border-green-500 border-t-transparent rounded-full animate-spin" />
+                            </div>
+                        ) : scamCampaigns.length === 0 ? (
+                            <div className="text-center py-16 text-gray-500">
+                                <Shield className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                                <p>No active campaigns to analyze</p>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                {scamCampaigns.map(c => (
+                                    <div key={c._id} className={`bg-gray-900 border rounded-2xl overflow-hidden ${
+                                        c.riskLevel === "high" ? "border-red-800" :
+                                        c.riskLevel === "medium" ? "border-yellow-800" : "border-gray-800"
+                                    }`}>
+                                        {/* Campaign header */}
+                                        <div
+                                            className="p-5 cursor-pointer hover:bg-gray-800 transition"
+                                            onClick={() => setExpandedScam(expandedScam === c._id ? null : c._id)}
+                                        >
+                                            <div className="flex items-start justify-between gap-3">
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full text-white ${riskBadgeColor(c.riskLevel)}`}>
+                                                            {c.riskScore}/100
+                                                        </span>
+                                                        <span className={`text-xs font-semibold uppercase ${
+                                                            c.riskLevel === "high" ? "text-red-400" :
+                                                            c.riskLevel === "medium" ? "text-yellow-400" : "text-green-400"
+                                                        }`}>
+                                                            {c.riskLevel === "high" ? "🚨 High Risk" : c.riskLevel === "medium" ? "⚠️ Suspicious" : "✅ Clean"}
+                                                        </span>
+                                                    </div>
+                                                    <p className="font-semibold text-white truncate">{c.title}</p>
+                                                    <div className="flex items-center gap-2 mt-1">
+                                                        {c.creator.avatar ? (
+                                                            <img src={c.creator.avatar} className="w-5 h-5 rounded-full object-cover" alt="" />
+                                                        ) : (
+                                                            <div className="w-5 h-5 rounded-full bg-gray-700 flex items-center justify-center text-xs">
+                                                                {c.creator.name?.[0]}
+                                                            </div>
+                                                        )}
+                                                        <p className="text-xs text-gray-400">@{c.creator.username} · Trust {c.creator.trustScore}% · {c.creator.postCount} posts</p>
+                                                    </div>
+                                                </div>
+                                                <div className="text-right shrink-0">
+                                                    <p className="text-xs text-gray-500">Raised</p>
+                                                    <p className="font-bold text-white">₹{c.amountRaised}</p>
+                                                    <p className="text-xs text-gray-500 mt-1">{c.flags.length} flag{c.flags.length !== 1 ? "s" : ""}</p>
+                                                </div>
+                                            </div>
+
+                                            {/* Flag pills preview */}
+                                            {c.flags.length > 0 && (
+                                                <div className="flex flex-wrap gap-1.5 mt-3">
+                                                    {c.flags.map((f, i) => (
+                                                        <span key={i} className={`text-xs px-2 py-0.5 rounded-full font-medium ${severityColor(f.severity)}`}>
+                                                            {f.signal}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* Expanded details */}
+                                        {expandedScam === c._id && (
+                                            <div className="border-t border-gray-800 p-5 bg-gray-950">
+
+                                                {/* Detailed flags */}
+                                                <h3 className="text-sm font-semibold text-gray-300 mb-3">Risk Signals Detected</h3>
+                                                {c.flags.length === 0 ? (
+                                                    <div className="flex items-center gap-2 text-green-400 text-sm mb-4">
+                                                        <CheckCircle className="w-4 h-4" />
+                                                        <span>No risk signals detected</span>
+                                                    </div>
+                                                ) : (
+                                                    <div className="space-y-2 mb-4">
+                                                        {c.flags.map((f, i) => (
+                                                            <div key={i} className={`flex items-start gap-3 p-3 rounded-xl ${
+                                                                f.severity === "high" ? "bg-red-950 border border-red-900" :
+                                                                f.severity === "medium" ? "bg-yellow-950 border border-yellow-900" :
+                                                                "bg-blue-950 border border-blue-900"
+                                                            }`}>
+                                                                <AlertTriangle className={`w-4 h-4 shrink-0 mt-0.5 ${
+                                                                    f.severity === "high" ? "text-red-400" :
+                                                                    f.severity === "medium" ? "text-yellow-400" : "text-blue-400"
+                                                                }`} />
+                                                                <div>
+                                                                    <p className={`text-xs font-bold ${
+                                                                        f.severity === "high" ? "text-red-300" :
+                                                                        f.severity === "medium" ? "text-yellow-300" : "text-blue-300"
+                                                                    }`}>{f.signal}</p>
+                                                                    <p className="text-xs text-gray-400 mt-0.5">{f.detail}</p>
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+
+                                                {/* IP Warning */}
+{c.creator.lastIP && c.flags.some(f => f.signal === "Same IP Campaigns") && (
+    <div className="bg-purple-950 border border-purple-800 rounded-xl p-3 mb-3 flex items-center gap-2">
+        <span className="text-purple-400 text-lg">🌐</span>
+        <div>
+            <p className="text-purple-300 text-xs font-bold">Same IP Detected</p>
+            <p className="text-purple-400 text-xs mt-0.5">IP: {c.creator.lastIP} — multiple accounts from same network</p>
+        </div>
+    </div>
+)}
+
+                                                {/* Campaign stats */}
+                                                <div className="grid grid-cols-3 gap-3 mb-4">
+                                                    <div className="bg-gray-900 rounded-xl p-3 text-center">
+                                                        <p className="text-lg font-black text-white">{c.progress}%</p>
+                                                        <p className="text-xs text-gray-500">Progress</p>
+                                                    </div>
+                                                    <div className="bg-gray-900 rounded-xl p-3 text-center">
+                                                        <p className="text-lg font-black text-white">{c.members}</p>
+                                                        <p className="text-xs text-gray-500">Members</p>
+                                                    </div>
+                                                    <div className="bg-gray-900 rounded-xl p-3 text-center">
+                                                        <p className="text-lg font-black text-white">
+                                                            {Math.round((Date.now() - new Date(c.created_on).getTime()) / (1000 * 60 * 60 * 24))}d
+                                                        </p>
+                                                        <p className="text-xs text-gray-500">Age</p>
+                                                    </div>
+                                                </div>
+
+                                                {/* Admin actions */}
+                                                <div className="flex gap-2 flex-wrap">
+                                                    <button
+                                                        onClick={() => handleFlag(c._id, "Flagged by admin via scam detection")}
+                                                        className="flex items-center gap-1.5 bg-yellow-600 hover:bg-yellow-500 text-white text-xs font-semibold px-3 py-2 rounded-xl transition"
+                                                    >
+                                                        <Flag className="w-3.5 h-3.5" /> Flag Campaign
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleRemove(c._id)}
+                                                        className="flex items-center gap-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold px-3 py-2 rounded-xl transition"
+                                                    >
+                                                        <Trash2 className="w-3.5 h-3.5" /> Remove Campaign
+                                                    </button>
+                                                    {actionMsg[c._id] && (
+                                                        <span className="text-xs text-green-400 flex items-center">{actionMsg[c._id]}</span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
                 )}
             </div>

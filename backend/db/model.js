@@ -16,6 +16,7 @@ const Userschema = new mongoose.Schema({
         }
     },
     followers: { type: Number, default: 0, min: 0 },
+    lastIP: { type: String, default: null },
     Following: { type: Number, default: 0, min: 0 },
     alltime_rank: { type: Number, default: 0, min: 0 },
     monthly_rank: { type: Number, default: 0, min: 0 },
@@ -66,7 +67,9 @@ const Campaignschema = new mongoose.Schema({
         comment: { type: String, trim: true },
         created_on: { type: Date, default: Date.now }
     }],
-    created_on: { type: Date, default: Date.now }
+    created_on: { type: Date, default: Date.now },
+    flagged: { type: Boolean, default: false },
+flagReason: { type: String, default: "" }
 });
 
 const donationSchema = new mongoose.Schema({

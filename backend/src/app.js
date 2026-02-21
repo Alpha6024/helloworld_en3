@@ -1117,6 +1117,350 @@ app.post("/donation/admin-allocate", async (req, res) => {
     }
 });
 
+// Scam Detection Route
+// Scam Detection Route — Enhanced with IP, AI title check, donation velocity
+app.get("/admin/scam-detection", async (req, res) => {
+    try {
+        const campaigns = await campaignmodel.find({ status: 'active' })
+            .populate('userId', 'name username avatar trustScore create_on lastIP');
+
+        // Known scam title patterns
+        const scamPatterns = [
+            /urgent/i, /emergency/i, /dying/i, /cancer/i, /flood/i, /disaster/i,
+            /help me/i, /save my/i, /only hope/i, /god bless/i, /donate now/i,
+            /100%/i, /guaranteed/i, /miracle/i, /trust me/i, /last chance/i,
+            /medical bill/i, /hospital/i, /accident/i, /stranded/i, /homeless/i
+        ];
+
+        // AI-based title similarity check using your existing AI fallback
+        const checkTitleWithAI = async (title, description) => {
+            try {
+                const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${process.env.GrokAPI}`
+                    },
+                    body: JSON.stringify({
+                        model: "llama-3.3-70b-versatile",
+                        max_tokens: 100,
+                        messages: [
+                            {
+                                role: "system",
+                                content: `You are a scam detection AI for an eco-action platform. 
+Campaigns should be about environmental actions: tree planting, beach cleaning, river cleanup, recycling drives, etc.
+Respond with ONLY a JSON object: {"isScam": true/false, "reason": "brief reason", "confidence": 0-100}`
+                            },
+                            {
+                                role: "user",
+                                content: `Is this campaign title/description suspicious or unrelated to eco-action?
+Title: "${title}"
+Description: "${description}"
+Answer in JSON only.`
+                            }
+                        ]
+                    })
+                });
+                const data = await response.json();
+                const text = data.choices?.[0]?.message?.content || '{"isScam":false,"reason":"","confidence":0}';
+                const clean = text.replace(/```json|```/g, '').trim();
+                return JSON.parse(clean);
+            } catch (err) {
+                return { isScam: false, reason: "", confidence: 0 };
+            }
+        };
+
+        const results = await Promise.all(campaigns.map(async (campaign) => {
+            let riskScore = 0;
+            const flags = [];
+            const creator = campaign.userId;
+            if (!creator) return null;
+
+            // ── Signal 1: New account < 48 hours ──────────────────
+            const accountAgeHours = creator.create_on
+                ? (Date.now() - new Date(creator.create_on).getTime()) / (1000 * 60 * 60)
+                : 999;
+            if (accountAgeHours < 48) {
+                riskScore += 30;
+                flags.push({ signal: "New Account", detail: `Account only ${Math.round(accountAgeHours)}h old`, severity: "high" });
+            }
+
+            // ── Signal 2: Zero posts ───────────────────────────────
+            const postCount = await postmodel.countDocuments({ userId: creator._id });
+            if (postCount === 0) {
+                riskScore += 25;
+                flags.push({ signal: "No Posts", detail: "Creator has never posted on platform", severity: "high" });
+            }
+
+            // ── Signal 3: Money but no members ────────────────────
+            if ((campaign.amountRaised || 0) > 500 && (campaign.members?.length || 0) === 0) {
+                riskScore += 20;
+                flags.push({ signal: "Money No Members", detail: `₹${campaign.amountRaised} raised but 0 members joined`, severity: "medium" });
+            }
+
+            // ── Signal 4: Stale + funded ──────────────────────────
+            const campaignAgeDays = (Date.now() - new Date(campaign.created_on).getTime()) / (1000 * 60 * 60 * 24);
+            if (campaignAgeDays > 30 && (campaign.progress || 0) === 0 && (campaign.amountRaised || 0) > 0) {
+                riskScore += 25;
+                flags.push({ signal: "Stale + Funded", detail: `${Math.round(campaignAgeDays)} days active, 0% progress, ₹${campaign.amountRaised} collected`, severity: "high" });
+            }
+
+            // ── Signal 5: Low trust score ─────────────────────────
+            if ((creator.trustScore || 0) > 0 && creator.trustScore < 30) {
+                riskScore += 20;
+                flags.push({ signal: "Low Trust Score", detail: `Creator trust score: ${creator.trustScore}%`, severity: "medium" });
+            }
+
+            // ── Signal 6: Thin description ────────────────────────
+            const wordCount = (campaign.description || "").trim().split(/\s+/).filter(w => w).length;
+            if (wordCount < 15 && (campaign.amountRaised || 0) > 200) {
+                riskScore += 15;
+                flags.push({ signal: "Thin Description", detail: `Only ${wordCount} words in description`, severity: "low" });
+            }
+
+            // ── Signal 7: Poor past feedback ──────────────────────
+            const pastCampaigns = await campaignmodel.find({
+                userId: creator._id,
+                status: 'completed',
+                'feedbacks.0': { $exists: true }
+            });
+            if (pastCampaigns.length > 0) {
+                let totalRating = 0, totalCount = 0;
+                pastCampaigns.forEach(c => c.feedbacks.forEach(f => { totalRating += f.rating; totalCount++; }));
+                const avgRating = totalRating / totalCount;
+                if (avgRating < 2 && totalCount >= 2) {
+                    riskScore += 30;
+                    flags.push({ signal: "Poor Past Feedback", detail: `Avg rating ${avgRating.toFixed(1)}/5 across ${totalCount} reviews`, severity: "high" });
+                }
+            }
+
+            // ── Signal 8: Same IP — multiple campaigns ────────────
+            if (creator.lastIP) {
+                const sameIPUsers = await usermodel.find({ lastIP: creator.lastIP, _id: { $ne: creator._id } });
+                if (sameIPUsers.length > 0) {
+                    const sameIPCampaigns = await campaignmodel.find({
+                        userId: { $in: sameIPUsers.map(u => u._id) },
+                        status: 'active'
+                    });
+                    if (sameIPCampaigns.length > 0) {
+                        riskScore += 35;
+                        flags.push({
+                            signal: "Same IP Campaigns",
+                            detail: `${sameIPCampaigns.length + 1} active campaigns from same IP address (${creator.lastIP})`,
+                            severity: "high"
+                        });
+                    }
+                }
+            }
+
+            // ── Signal 9: Keyword pattern match in title/desc ─────
+            const textToCheck = `${campaign.title} ${campaign.description}`;
+            const matchedPatterns = scamPatterns.filter(p => p.test(textToCheck));
+            if (matchedPatterns.length >= 2) {
+                riskScore += 20;
+                flags.push({
+                    signal: "Suspicious Keywords",
+                    detail: `Title/description matches ${matchedPatterns.length} known scam patterns`,
+                    severity: "medium"
+                });
+            }
+
+            // ── Signal 10: AI title similarity check ──────────────
+            const aiResult = await checkTitleWithAI(campaign.title, campaign.description);
+            if (aiResult.isScam && aiResult.confidence > 70) {
+                riskScore += 25;
+                flags.push({
+                    signal: "AI: Not Eco-Related",
+                    detail: `AI detected (${aiResult.confidence}% confidence): ${aiResult.reason}`,
+                    severity: "high"
+                });
+            } else if (aiResult.isScam && aiResult.confidence > 50) {
+                riskScore += 10;
+                flags.push({
+                    signal: "AI: Suspicious Content",
+                    detail: `AI flagged (${aiResult.confidence}% confidence): ${aiResult.reason}`,
+                    severity: "medium"
+                });
+            }
+
+            // ── Signal 11: Donation velocity — huge amount in 24h ─
+            const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+            const recentDonations = await donationmodel.aggregate([
+                {
+                    $match: {
+                        campaignId: campaign._id,
+                        type: "donation",
+                        createdAt: { $gte: last24h }
+                    }
+                },
+                { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } }
+            ]);
+            const recentTotal = recentDonations[0]?.total || 0;
+            const recentCount = recentDonations[0]?.count || 0;
+
+            if (recentTotal > 2000 && (campaign.members?.length || 0) === 0) {
+                riskScore += 30;
+                flags.push({
+                    signal: "Donation Velocity",
+                    detail: `₹${recentTotal} received in last 24h from ${recentCount} transaction(s) with 0 members — possible money laundering`,
+                    severity: "high"
+                });
+            } else if (recentTotal > 1000 && recentCount <= 2) {
+                riskScore += 15;
+                flags.push({
+                    signal: "Suspicious Velocity",
+                    detail: `₹${recentTotal} in 24h from only ${recentCount} donor(s) — unusually concentrated`,
+                    severity: "medium"
+                });
+            }
+
+            return {
+                _id: campaign._id,
+                title: campaign.title,
+                description: campaign.description,
+                amountRaised: campaign.amountRaised || 0,
+                progress: campaign.progress || 0,
+                members: campaign.members?.length || 0,
+                created_on: campaign.created_on,
+                creator: {
+                    _id: creator._id,
+                    name: creator.name,
+                    username: creator.username,
+                    avatar: creator.avatar,
+                    trustScore: creator.trustScore || 0,
+                    postCount,
+                    accountAgeHours: Math.round(accountAgeHours),
+                    lastIP: creator.lastIP || null
+                },
+                riskScore: Math.min(riskScore, 100),
+                flags,
+                riskLevel: riskScore >= 61 ? "high" : riskScore >= 31 ? "medium" : "low"
+            };
+        }));
+
+        const scored = results.filter(Boolean).sort((a, b) => b.riskScore - a.riskScore);
+        res.json({ success: true, campaigns: scored });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// Login — captures IP for scam detection
+app.post("/user/login", async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        if (!username || !password) return res.status(400).json({ success: false, message: "Username and password required" });
+
+        const user = await usermodel.findOne({ username });
+        if (!user) return res.status(401).json({ success: false, message: "Invalid username or password" });
+        if (!user.password) return res.status(401).json({ success: false, message: "This account uses Google login" });
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) return res.status(401).json({ success: false, message: "Invalid username or password" });
+
+        // Capture IP
+        const userIP = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+        await usermodel.findByIdAndUpdate(user._id, { lastIP: userIP });
+
+        req.login(user, (err) => {
+            if (err) return res.status(500).json({ success: false, message: "Login failed" });
+            res.json({ success: true, user });
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Signup — captures IP too
+app.post("/user/signup", upload.single('avatar'), async (req, res) => {
+    try {
+        const { name, email, username, password, mob } = req.body;
+
+        const existingEmail = await usermodel.findOne({ email });
+        if (existingEmail) return res.status(400).json({ success: false, message: "Email already registered" });
+
+        const existingUsername = await usermodel.findOne({ username });
+        if (existingUsername) return res.status(400).json({ success: false, message: "Username already taken" });
+
+        let avatarUrl = null;
+        if (req.file) {
+            const result = await uploadbuffer(req.file.buffer);
+            avatarUrl = result.url;
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const userIP = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+
+        const newUser = await usermodel.create({
+            name, email, username,
+            password: hashedPassword,
+            mob: mob || null,
+            avatar: avatarUrl,
+            isNewUser: false,
+            lastIP: userIP  // capture IP at signup
+        });
+
+        req.login(newUser, (err) => {
+            if (err) return res.status(500).json({ success: false, message: "Login after signup failed" });
+            res.status(201).json({ success: true, message: "Account created successfully", user: newUser });
+        });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+});
+
+// Admin flag/unflag a campaign
+app.put("/admin/campaign/flag/:id", async (req, res) => {
+    try {
+        const { flagged, reason } = req.body;
+        await campaignmodel.findByIdAndUpdate(req.params.id, { flagged, flagReason: reason || "" });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// Admin remove a campaign
+app.delete("/admin/campaign/remove/:id", async (req, res) => {
+    try {
+        const campaign = await campaignmodel.findById(req.params.id);
+        if (!campaign) return res.status(404).json({ success: false, message: "Campaign not found" });
+        await campaignmodel.findByIdAndDelete(req.params.id);
+        await usermodel.findByIdAndUpdate(campaign.userId, {
+            $push: { notifications: { message: `⚠️ Your campaign "${campaign.title}" was removed by admin for policy violation.` } }
+        });
+        res.json({ success: true, message: "Campaign removed" });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+app.put("/admin/campaign/flag/:id", async (req, res) => {
+    try {
+        const { flagged, reason } = req.body;
+        const campaign = await campaignmodel.findByIdAndUpdate(
+            req.params.id,
+            { flagged, flagReason: reason || "" },
+            { new: true }
+        );
+
+        // Notify campaign creator when flagged
+        if (flagged && campaign) {
+            await usermodel.findByIdAndUpdate(campaign.userId, {
+                $push: {
+                    notifications: {
+                        message: `⚠️ Admin has flagged your campaign "${campaign.title}" for review. Reason: ${reason || "Policy violation suspected"}. Please ensure your campaign follows platform guidelines.`
+                    }
+                }
+            });
+        }
+
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
 const paymentRoutes = require("./routes/payment");
 
 app.use("/payment", paymentRoutes);

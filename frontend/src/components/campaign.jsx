@@ -503,8 +503,22 @@ export default function Campaign() {
                             )}
 
                             <div className="p-4">
-                                {/* Status + Buttons */}
-                                <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+    {/* Admin Flag Warning Banner */}
+    {campaign.flagged && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-3 flex items-start gap-2">
+            <span className="text-lg shrink-0">🚩</span>
+            <div>
+                <p className="text-red-600 font-semibold text-xs">This campaign has been flagged by admin</p>
+                {campaign.flagReason && (
+                    <p className="text-red-400 text-xs mt-0.5">{campaign.flagReason}</p>
+                )}
+                <p className="text-red-300 text-xs mt-1">Please proceed with caution before donating or joining.</p>
+            </div>
+        </div>
+    )}
+
+    {/* Status + Buttons */}
+    <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
                                     <span className={`text-xs font-bold px-3 py-1 rounded-full ${campaign.status === 'active' ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-500'}`}>
                                         {campaign.status === 'active' ? '🟢 ACTIVE' : '✅ COMPLETED'}
                                     </span>
