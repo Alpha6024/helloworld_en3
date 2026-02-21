@@ -1014,6 +1014,78 @@ app.get("/user/trustscore/:userId", async (req, res) => {
     }
 });
 
+app.get("/admin/users", async (req, res) => {
+    try {
+        const users = await usermodel.find({}, 'name username email avatar trustScore followers Following create_on');
+        res.json({ success: true, users });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// Admin allocate: verifies Razorpay payment, records allocation, updates campaign fund
+app.post("/donation/admin-allocate", async (req, res) => {
+    try {
+        const { campaignId, amount, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+
+        // Verify Razorpay signature
+        const crypto = require("crypto");
+        const expectedSig = crypto
+            .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+            .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+            .digest("hex");
+
+        if (expectedSig !== razorpay_signature) {
+            return res.status(400).json({ success: false, message: "Invalid payment signature" });
+        }
+
+        const campaign = await campaignmodel.findById(campaignId);
+        if (!campaign) return res.status(404).json({ success: false, message: "Campaign not found" });
+
+        // Check pool has enough balance
+        const donations = await donationmodel.aggregate([
+            { $match: { type: "donation" } },
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+        ]);
+        const allocations = await donationmodel.aggregate([
+            { $match: { type: { $in: ["allocation", "reward"] } } },
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+        ]);
+        const poolBalance = (donations[0]?.total || 0) - (allocations[0]?.total || 0);
+
+        if (amount > poolBalance) {
+            return res.status(400).json({ success: false, message: "Insufficient pool balance" });
+        }
+
+        // Update campaign's amountRaised
+        await campaignmodel.findByIdAndUpdate(campaignId, { $inc: { amountRaised: amount } });
+
+        // Record allocation transaction (this reduces the pool)
+        await donationmodel.create({
+            type: "allocation",
+            campaignId,
+            amount,
+            paymentId: razorpay_payment_id,
+            orderId: razorpay_order_id,
+            description: `Admin allocated ₹${amount} to campaign "${campaign.title}"`
+        });
+
+        // Notify campaign creator
+        await usermodel.findByIdAndUpdate(campaign.userId, {
+            $push: {
+                notifications: {
+                    message: `🎉 Admin sent ₹${amount} to your campaign "${campaign.title}"!`
+                }
+            }
+        });
+
+        res.json({ success: true, message: `₹${amount} allocated to "${campaign.title}"` });
+
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
 const paymentRoutes = require("./routes/payment");
 
 app.use("/payment", paymentRoutes);

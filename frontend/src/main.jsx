@@ -18,6 +18,7 @@ import CreateAcc from "./components/createacc";
 import Bot from "./components/bot";
 import Fund from "./components/fund";
 import Feedback from "./components/feedback";
+import Admin from "./components/admin";
 
 const router = createBrowserRouter([
   {
@@ -67,6 +68,9 @@ const router = createBrowserRouter([
   {
     path:"/acc/campaign/feedback/:campaignId",
     element:<Feedback/>
+},{
+path:"/admin",
+element:<Admin/>
 }
 ]);
 
