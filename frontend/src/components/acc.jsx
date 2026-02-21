@@ -147,6 +147,15 @@ export default function Acc() {
                     <span>•</span>
                     <button className="hover:text-gray-700">TERMS OF SERVICE</button>
                 </div>
+                {/* Admin Login Section */}
+<div className="mt-4 pt-4 border-t border-gray-100 text-center">
+    <button 
+        onClick={() => navigate("/admin")}
+        className="cursor-pointer text-xs text-gray-400 hover:text-gray-600 font-medium uppercase tracking-widest transition-colors"
+    >
+        Admin Portal
+    </button>
+</div>
             </div>
         </div>
     );
