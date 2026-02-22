@@ -266,26 +266,27 @@ app.post("/post/create", upload.fields([{ name: "image", maxCount: 1 }, { name: 
     }
 
     try {
-        const { likes, featured } = req.body;
+        const { likes, featured, description } = req.body; // ← add description
 
         let imageUrl = null;
         let videoUrl = null;
-if (req.files?.image) {
-    const imageResult = await uploadbuffer(req.files.image[0].buffer, req.files.image[0].mimetype);
-    imageUrl = imageResult.url;
-}
 
-if (req.files?.video) {
-    const videoResult = await uploadbuffer(req.files.video[0].buffer, req.files.video[0].mimetype);
-    videoUrl = videoResult.url;
-}
+        if (req.files?.image) {
+            const imageResult = await uploadbuffer(req.files.image[0].buffer, req.files.image[0].mimetype);
+            imageUrl = imageResult.url;
+        }
 
-        // Generate unique numeric id for post
+        if (req.files?.video) {
+            const videoResult = await uploadbuffer(req.files.video[0].buffer, req.files.video[0].mimetype);
+            videoUrl = videoResult.url;
+        }
+
         const postCount = await postmodel.countDocuments();
 
         const newPost = await postmodel.create({
             id: postCount + 1 + Date.now(),
             userId: req.user._id,
+            description: description || null, // ← save it
             image: imageUrl,
             Video: videoUrl,
             likes: likes || 0,
@@ -298,11 +299,7 @@ if (req.files?.video) {
             data: newPost
         });
     } catch (error) {
-        res.status(400).json({
-            success: false,
-            message: "Error creating post",
-            error: error.message
-        });
+        res.status(400).json({ success: false, message: "Error creating post", error: error.message });
     }
 });
 
@@ -322,7 +319,9 @@ app.get("/post/myposts", async (req, res) => {
 app.get("/post/view", async (req, res) => {
     try {
         const posts = await postmodel.find()
-            .populate('userId', 'name username avatar');
+            .populate('userId', 'name username avatar')
+            .sort({ posted_on: -1 }) // newest first
+            .lean();
         res.status(200).json({ success: true, posts });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
